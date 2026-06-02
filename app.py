@@ -1,60 +1,43 @@
 import os
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"  # Fix: OMP duplicate libiomp5md.dll error
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from datetime import datetime
 
 import streamlit as st
 
-# --- PAGE CONFIG must be the very first Streamlit call ---
+# --- PAGE CONFIG ---
 st.set_page_config(
     page_title="MediDrishti AI",
-    page_icon="🩺",
+    page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={},
 )
 
-# --- Load env variables BEFORE anything else ---
+# --- Load env ---
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except Exception as e:
     st.error(f"Failed to load .env: {e}")
 
-# --- Check API key IMMEDIATELY - visible error before CSS hides anything ---
-_xai_api_key = os.getenv("XAI_API_KEY", "").strip()
-_placeholders = {"your_xai_api_key_here", "xai-put-your-real-key-here", "", "your-key-here"}
-if _xai_api_key in _placeholders:
-    st.error("⚠️ XAI_API_KEY not set in your .env file.")
+# --- API key check ---
+_key = os.getenv("XAI_API_KEY", "").strip()
+_placeholders = {
+    "", "your_xai_api_key_here", "xai-put-your-real-key-here",
+    "PASTE_YOUR_REAL_XAI_KEY_HERE", "your-key-here",
+}
+if _key in _placeholders:
+    st.error("⚠️ API key not set in your .env file.")
     st.markdown("""
-    **To fix this:**
-    1. Open the file `.env` in the project folder
-    2. Replace the placeholder with your real xAI Grok key
-    3. Get your key at: https://console.x.ai/
-    4. Save `.env` and restart: `streamlit run app.py`
-
-    Example `.env` content:
+    **To fix:** Open `.env` and set your Groq key:
     ```
-    XAI_API_KEY=xai-yourrealkeyhere
+    XAI_API_KEY=gsk_yourrealgroqkeyhere
     ```
+    Get a free key at: https://console.groq.com/
     """)
     st.stop()
 
-# --- Hide all Streamlit chrome (only runs when API key is valid) ---
-st.markdown(
-    """
-    <style>
-        header[data-testid="stHeader"]  { display: none !important; }
-        footer                          { display: none !important; }
-        [data-testid="stStatusWidget"]  { display: none !important; }
-        [data-testid="stDeployButton"]  { display: none !important; }
-        #MainMenu                       { display: none !important; }
-        .block-container                { padding-top: 1.5rem !important; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# --- Backend imports wrapped so errors are visible ---
+# --- Backend imports ---
 try:
     from backend.llm import get_llm
     from backend.analyzer import analyze_parameters, generate_health_summary
@@ -62,232 +45,391 @@ try:
     from backend.diet_engine import generate_diet_recommendations
     from backend.precaution_engine import generate_precaution_plan
     from backend.report_parser import (
-        ALLOWED_EXTENSIONS,
-        extract_report_text,
-        parse_medical_parameters,
-        validate_report_file,
+        ALLOWED_EXTENSIONS, extract_report_text,
+        parse_medical_parameters, validate_report_file,
     )
     from frontend.ui import (
-        load_styles,
-        render_list,
-        render_metric_card,
-        render_page_header,
-        render_report_status,
+        load_styles, render_sidebar_brand, render_hero,
+        render_page_header, render_metric_card, render_parameter_card,
+        render_diet_section, render_precaution_section,
+        render_chat_message, render_report_status,
+        render_list, render_section_label, render_ai_badge,
     )
 except Exception as e:
     st.error(f"Import error: {e}")
     st.exception(e)
     st.stop()
 
+# --- Load styles ---
+load_styles()
 
+# --- Session state ---
 def initialize_session() -> None:
     keys = [
         "uploaded_file", "report_text", "parameters",
         "analysis_results", "health_summary", "diet_recommendations",
         "precaution_plan", "chat_assistant", "summary_text",
+        "chat_history",
     ]
     for key in keys:
         if key not in st.session_state:
             st.session_state[key] = None
+    if st.session_state.chat_history is None:
+        st.session_state.chat_history = []
+
+initialize_session()
 
 
 def build_report_summary() -> str:
     lines = [
-        "MediDrishti AI Report Summary",
+        "MediDrishti AI — Health Report Summary",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
     ]
     if st.session_state.health_summary:
         h = st.session_state.health_summary
         lines += [
-            f"Health Score: {h['health_score']}",
-            f"Risk Level: {h['risk_level']}", "",
+            f"Health Score : {h['health_score']}",
+            f"Risk Level   : {h['risk_level']}", "",
             "Key Findings:",
-            *[f"- {i}" for i in h["key_findings"]], "",
+            *[f"  - {i}" for i in h["key_findings"]], "",
             "Positive Findings:",
-            *[f"- {i}" for i in h["positive_findings"]], "",
+            *[f"  - {i}" for i in h["positive_findings"]], "",
             "Areas of Concern:",
-            *[f"- {i}" for i in h["areas_of_concern"]], "",
+            *[f"  - {i}" for i in h["areas_of_concern"]], "",
         ]
     if st.session_state.analysis_results:
-        lines.append("Detailed Parameter Summary:")
+        lines.append("Detailed Parameters:")
         for item in st.session_state.analysis_results:
             lines.append(
-                f"- {item['parameter']}: {item['value']} ({item['status']}). {item['simple_explanation']}"
+                f"  {item['parameter']}: {item['value']} "
+                f"[{item['status']}] — {item['simple_explanation']}"
             )
     return "\n".join(lines)
 
 
-def upload_page() -> None:
-    render_page_header("MediDrishti AI", "AI-powered medical report analysis for better health decisions.")
-    st.markdown("Upload a PDF or image report and let MediDrishti extract insights instantly.")
+# ================================================================
+# SIDEBAR
+# ================================================================
+render_sidebar_brand()
+
+st.sidebar.markdown("---")
+
+PAGES = {
+    "📄 Upload Report":       "upload",
+    "📊 Analysis Dashboard":  "dashboard",
+    "🥗 Diet Recommendations": "diet",
+    "⚠️ Precautions":         "precautions",
+    "💬 Ask MediDrishti":     "chat",
+    "⬇️ Download Summary":    "download",
+}
+
+page_label = st.sidebar.radio(
+    "Navigate",
+    list(PAGES.keys()),
+    label_visibility="collapsed",
+)
+page = PAGES[page_label]
+
+# Upload status in sidebar
+st.sidebar.markdown("---")
+if st.session_state.uploaded_file:
+    st.sidebar.markdown(
+        f"""
+        <div style="background:#CCFBF1; border:1px solid #14B8A6; border-radius:8px;
+                    padding:0.6rem 0.8rem; font-size:0.82rem; color:#0F766E;">
+            <strong>📋 Report loaded:</strong><br>{st.session_state.uploaded_file}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    st.sidebar.markdown(
+        """
+        <div style="background:#F9FAFB; border:1px solid #E5E7EB; border-radius:8px;
+                    padding:0.6rem 0.8rem; font-size:0.82rem; color:#6B7280;">
+            No report uploaded yet.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ================================================================
+# PAGE 1 — UPLOAD REPORT
+# ================================================================
+if page == "upload":
+    render_hero()
+
+    render_page_header("Upload Medical Report", "Upload your PDF or image report for instant AI analysis.", "📄")
+
+    st.markdown(
+        """
+        <div style="background:#FAFAFA; border:1px solid #E5E7EB; border-radius:12px;
+                    padding:1.2rem 1.5rem; margin-bottom:1.2rem;">
+            <div style="display:flex; gap:1rem; flex-wrap:wrap;">
+                <span style="font-size:0.85rem; color:#6B7280;">
+                    📑 <strong>PDF</strong> blood reports
+                </span>
+                <span style="font-size:0.85rem; color:#6B7280;">
+                    🖼️ <strong>JPG / PNG</strong> scanned reports
+                </span>
+                <span style="font-size:0.85rem; color:#6B7280;">
+                    🔒 Processed locally — your data stays private
+                </span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     uploaded_file = st.file_uploader(
-        "Upload your medical report",
+        "Drop your medical report here",
         type=list(ALLOWED_EXTENSIONS),
         accept_multiple_files=False,
+        label_visibility="collapsed",
     )
 
-    if uploaded_file is not None:
+    col_a, col_b = st.columns([1, 5])
+    with col_a:
+        analyze_clicked = st.button("🔍 Analyze Report", use_container_width=True)
+    with col_b:
+        if st.button("🗑️ Clear Report", use_container_width=False):
+            for k in ["uploaded_file", "report_text", "parameters", "analysis_results",
+                      "health_summary", "diet_recommendations", "precaution_plan",
+                      "chat_assistant", "summary_text", "chat_history"]:
+                st.session_state[k] = None
+            st.session_state.chat_history = []
+            st.rerun()
+
+    if uploaded_file and analyze_clicked:
         if not validate_report_file(uploaded_file.name):
-            st.error("Please upload a valid PDF or image file.")
-            return
-        try:
-            with st.spinner("Analyzing report..."):
-                raw_text = extract_report_text(uploaded_file)
-                if not raw_text:
-                    st.warning("File uploaded but no text could be extracted.")
-                    return
-                parsed_data = parse_medical_parameters(raw_text)
-                analysis_results = analyze_parameters(parsed_data)
-                summary = generate_health_summary(analysis_results)
-                diet_recommendations = generate_diet_recommendations(analysis_results)
-                precaution_plan = generate_precaution_plan(analysis_results)
-                assistant = ReportChatAssistant(report_context=raw_text)
-
-            st.session_state.uploaded_file = uploaded_file.name
-            st.session_state.report_text = raw_text
-            st.session_state.parameters = parsed_data
-            st.session_state.analysis_results = analysis_results
-            st.session_state.health_summary = summary
-            st.session_state.diet_recommendations = diet_recommendations
-            st.session_state.precaution_plan = precaution_plan
-            st.session_state.chat_assistant = assistant
-            st.session_state.summary_text = build_report_summary()
-            render_report_status("Report uploaded and analyzed successfully!")
-        except Exception as e:
-            st.error(f"Upload failed: {e}")
-            st.exception(e)
-
-
-def dashboard_page() -> None:
-    render_page_header("Analysis Dashboard")
-    if not st.session_state.analysis_results:
-        st.info("Upload a medical report first to view your dashboard.")
-        return
-
-    health = st.session_state.health_summary
-    st.markdown("### Health Overview")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        render_metric_card("Health Score", health["health_score"], "AI score based on report values.")
-    with col2:
-        render_metric_card("Risk Level", health["risk_level"], "Current risk estimate.")
-    with col3:
-        render_metric_card("Findings", str(len(health["key_findings"])), "Note-worthy items detected.")
-
-    with st.expander("Parameter Insights"):
-        for item in st.session_state.analysis_results:
-            st.markdown(f"#### {item['parameter']}")
-            st.write(f"**Value:** {item['value']}")
-            st.write(f"**Range:** {item['normal_range']}")
-            st.write(f"**Status:** {item['status']}")
-            st.write(f"**Medical Explanation:** {item['medical_explanation']}")
-            st.write(f"**Simple Explanation:** {item['simple_explanation']}")
-            st.divider()
-
-    render_list("Positive Findings", health["positive_findings"])
-    render_list("Areas of Concern", health["areas_of_concern"])
-
-
-def diet_page() -> None:
-    render_page_header("Diet Recommendations")
-    if not st.session_state.diet_recommendations:
-        st.info("Upload a report to unlock personalized diet guidance.")
-        return
-
-    diet = st.session_state.diet_recommendations
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### ✅ Foods to Include")
-        for item in diet["include"]:
-            st.write(f"• {item}")
-        st.markdown("### 💧 Hydration")
-        for item in diet["hydration"]:
-            st.write(f"• {item}")
-    with col2:
-        st.markdown("### ❌ Foods to Limit")
-        for item in diet["limit"]:
-            st.write(f"• {item}")
-        st.markdown("### 🥗 Nutritional Suggestions")
-        for item in diet["nutrition"]:
-            st.write(f"• {item}")
-
-
-def precautions_page() -> None:
-    render_page_header("Health Precautions")
-    if not st.session_state.precaution_plan:
-        st.info("Upload a report first to generate precautions.")
-        return
-
-    plan = st.session_state.precaution_plan
-    col1, col2 = st.columns(2)
-    with col1:
-        render_list("Daily Precautions", plan["daily_precautions"])
-        render_list("Lifestyle Changes", plan["lifestyle_changes"])
-    with col2:
-        render_list("Monitoring Recommendations", plan["monitoring_recommendations"])
-        render_list("Medical Follow-Up Suggestions", plan["medical_follow_up"])
-
-
-def chat_page() -> None:
-    render_page_header("Chat With Report")
-    if not st.session_state.chat_assistant:
-        st.info("Upload a report to start a conversation with the assistant.")
-        return
-
-    user_input = st.text_area("Ask a question about your report", height=120)
-    if st.button("Send") and user_input.strip():
-        with st.spinner("Thinking..."):
+            st.error("Please upload a valid PDF, JPG, or PNG file.")
+        else:
             try:
-                response = st.session_state.chat_assistant.ask(user_input)
-                st.markdown("### Assistant Response")
-                st.write(response)
+                with st.spinner("🔬 Analyzing your report with AI..."):
+                    raw_text = extract_report_text(uploaded_file)
+                    if not raw_text:
+                        st.warning("No text could be extracted from this file.")
+                        st.stop()
+                    parsed_data       = parse_medical_parameters(raw_text)
+                    analysis_results  = analyze_parameters(parsed_data)
+                    summary           = generate_health_summary(analysis_results)
+                    diet_recs         = generate_diet_recommendations(analysis_results)
+                    precaution_plan   = generate_precaution_plan(analysis_results)
+                    assistant         = ReportChatAssistant(report_context=raw_text)
+
+                st.session_state.update({
+                    "uploaded_file":       uploaded_file.name,
+                    "report_text":         raw_text,
+                    "parameters":          parsed_data,
+                    "analysis_results":    analysis_results,
+                    "health_summary":      summary,
+                    "diet_recommendations": diet_recs,
+                    "precaution_plan":     precaution_plan,
+                    "chat_assistant":      assistant,
+                    "chat_history":        [],
+                })
+                st.session_state.summary_text = build_report_summary()
+                render_report_status(f"✅ Report '{uploaded_file.name}' analyzed successfully! Navigate using the sidebar.")
             except Exception as e:
-                st.error(f"Chat failed: {e}")
+                st.error(f"Analysis failed: {e}")
                 st.exception(e)
 
+    elif uploaded_file and not analyze_clicked:
+        st.info(f"📋 **{uploaded_file.name}** ready — click **Analyze Report** to begin.")
 
-def download_page() -> None:
-    render_page_header("Report Summary Download")
+
+# ================================================================
+# PAGE 2 — ANALYSIS DASHBOARD
+# ================================================================
+elif page == "dashboard":
+    render_page_header("Analysis Dashboard", "Your personalized health overview.", "📊")
+
+    if not st.session_state.analysis_results:
+        st.info("📄 Please upload and analyze a medical report first.")
+        st.stop()
+
+    h = st.session_state.health_summary
+    render_ai_badge("AI Health Summary")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        render_metric_card("🎯 Health Score", h["health_score"], "Overall AI-computed score")
+    with c2:
+        render_metric_card("⚠️ Risk Level", h["risk_level"], "Based on abnormal parameters")
+    with c3:
+        render_metric_card("🔍 Findings", str(len(h["key_findings"])), "Parameters needing attention")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    render_section_label("PARAMETER ANALYSIS")
+
+    for item in st.session_state.analysis_results:
+        render_parameter_card(item)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    c4, c5 = st.columns(2)
+    with c4:
+        render_list("✅ Positive Findings", h["positive_findings"])
+    with c5:
+        render_list("⚠️ Areas of Concern", h["areas_of_concern"])
+
+
+# ================================================================
+# PAGE 3 — DIET RECOMMENDATIONS
+# ================================================================
+elif page == "diet":
+    render_page_header("Diet Recommendations", "Personalized nutrition guidance based on your report.", "🥗")
+
+    if not st.session_state.diet_recommendations:
+        st.info("📄 Please upload and analyze a medical report first.")
+        st.stop()
+
+    render_ai_badge("AI Personalized")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    diet = st.session_state.diet_recommendations
+    c1, c2 = st.columns(2)
+    with c1:
+        render_diet_section("Foods to Include", "✅", diet["include"], "#22C55E")
+        st.markdown("<br>", unsafe_allow_html=True)
+        render_diet_section("Hydration Tips", "💧", diet["hydration"], "#3B82F6")
+    with c2:
+        render_diet_section("Foods to Avoid", "❌", diet["limit"], "#EF4444")
+        st.markdown("<br>", unsafe_allow_html=True)
+        render_diet_section("Nutritional Suggestions", "🥗", diet["nutrition"], "#F59E0B")
+
+
+# ================================================================
+# PAGE 4 — PRECAUTIONS
+# ================================================================
+elif page == "precautions":
+    render_page_header("Health Precautions", "Daily habits and doctor consultation guidance.", "⚠️")
+
+    if not st.session_state.precaution_plan:
+        st.info("📄 Please upload and analyze a medical report first.")
+        st.stop()
+
+    plan = st.session_state.precaution_plan
+    c1, c2 = st.columns(2)
+    with c1:
+        with st.expander("🌅 Daily Precautions", expanded=True):
+            render_precaution_section("Daily Precautions", "🌅", plan["daily_precautions"])
+        with st.expander("🏃 Lifestyle Changes", expanded=True):
+            render_precaution_section("Lifestyle Changes", "🏃", plan["lifestyle_changes"])
+    with c2:
+        with st.expander("📊 Monitoring Recommendations", expanded=True):
+            render_precaution_section("Monitoring", "📊", plan["monitoring_recommendations"])
+        with st.expander("🏥 Doctor Consultation", expanded=True):
+            render_precaution_section("Doctor Consultation", "🏥", plan["medical_follow_up"])
+
+
+# ================================================================
+# PAGE 5 — CHAT
+# ================================================================
+elif page == "chat":
+    render_page_header("Ask MediDrishti", "Chat with AI about your health report.", "💬")
+    render_ai_badge("Powered by Groq AI")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if not st.session_state.chat_assistant:
+        st.info("📄 Please upload and analyze a medical report first.")
+        st.stop()
+
+    # Render chat history
+    if st.session_state.chat_history:
+        st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+        for msg in st.session_state.chat_history:
+            render_chat_message(msg["role"], msg["content"])
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(
+            """
+            <div style="background:#F0FDF4; border:1px solid #22C55E; border-radius:12px;
+                        padding:1.2rem 1.5rem; margin-bottom:1rem;">
+                <strong>💬 Start a conversation!</strong><br>
+                <span style="color:#6B7280; font-size:0.9rem;">Try asking:</span>
+                <div style="margin-top:0.5rem; display:flex; flex-wrap:wrap; gap:0.4rem;">
+                    <span style="background:white; border:1px solid #E5E7EB; border-radius:999px;
+                                 padding:0.2rem 0.7rem; font-size:0.82rem; color:#374151;">
+                        What does my cholesterol level mean?
+                    </span>
+                    <span style="background:white; border:1px solid #E5E7EB; border-radius:999px;
+                                 padding:0.2rem 0.7rem; font-size:0.82rem; color:#374151;">
+                        Why is my glucose high?
+                    </span>
+                    <span style="background:white; border:1px solid #E5E7EB; border-radius:999px;
+                                 padding:0.2rem 0.7rem; font-size:0.82rem; color:#374151;">
+                        What foods should I avoid?
+                    </span>
+                    <span style="background:white; border:1px solid #E5E7EB; border-radius:999px;
+                                 padding:0.2rem 0.7rem; font-size:0.82rem; color:#374151;">
+                        Explain my report simply
+                    </span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Chat input
+    with st.container():
+        user_input = st.text_area(
+            "Your message",
+            placeholder="Ask anything about your health report...",
+            height=90,
+            label_visibility="collapsed",
+        )
+        col_send, col_clear = st.columns([1, 5])
+        with col_send:
+            send = st.button("Send 📤", use_container_width=True)
+        with col_clear:
+            if st.button("Clear Chat 🗑️"):
+                st.session_state.chat_history = []
+                st.session_state.chat_assistant.chat_history = []
+                st.rerun()
+
+    if send and user_input.strip():
+        st.session_state.chat_history.append({"role": "user", "content": user_input.strip()})
+        with st.spinner("MediDrishti is thinking..."):
+            try:
+                response = st.session_state.chat_assistant.ask(user_input.strip())
+            except Exception as e:
+                response = f"Sorry, I encountered an error: {str(e)}"
+        st.session_state.chat_history.append({"role": "assistant", "content": response})
+        st.rerun()
+
+
+# ================================================================
+# PAGE 6 — DOWNLOAD
+# ================================================================
+elif page == "download":
+    render_page_header("Download Summary", "Save your complete health report summary.", "⬇️")
+
     if not st.session_state.summary_text:
-        st.info("Upload a medical report to generate a downloadable summary.")
-        return
+        st.info("📄 Please upload and analyze a medical report first.")
+        st.stop()
 
-    st.download_button(
-        label="⬇️ Download Report Summary",
-        data=st.session_state.summary_text,
-        file_name="medidristi_report_summary.txt",
-        mime="text/plain",
+    st.markdown(
+        """
+        <div class="md-card fade-up">
+            <div style="font-size:1rem; font-weight:600; color:#1F2937; margin-bottom:0.4rem;">
+                📋 Your health summary is ready
+            </div>
+            <div style="font-size:0.88rem; color:#6B7280;">
+                Download a complete text summary including health score, parameter analysis,
+                diet recommendations, and precautions.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-
-
-# --- Load styles and session ---
-load_styles()
-initialize_session()
-
-# --- Sidebar navigation ---
-page = st.sidebar.selectbox(
-    "Navigation",
-    [
-        "Upload Report",
-        "Analysis Dashboard",
-        "Diet Recommendations",
-        "Precautions",
-        "Chat Assistant",
-        "Report Summary Download",
-    ],
-)
-
-if page == "Upload Report":
-    upload_page()
-elif page == "Analysis Dashboard":
-    dashboard_page()
-elif page == "Diet Recommendations":
-    diet_page()
-elif page == "Precautions":
-    precautions_page()
-elif page == "Chat Assistant":
-    chat_page()
-elif page == "Report Summary Download":
-    download_page()
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.download_button(
+        label="⬇️ Download Health Summary (.txt)",
+        data=st.session_state.summary_text,
+        file_name=f"medidristi_summary_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+        mime="text/plain",
+        use_container_width=False,
+    )
