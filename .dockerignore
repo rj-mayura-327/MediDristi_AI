@@ -1,0 +1,54 @@
+# Version control
+.git
+.gitignore
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment secrets (must be injected at runtime)
+.env
+.env.local
+.env.*.local
+
+# Testing artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# Temporary / uploaded files
+uploads/
+temp/
+tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation (not needed in image)
+*.md
+!requirements.txt
+
+# Misc
+*.bak
+*.tmp
+*.log
+debug_complete.py
+verify_setup.py
+setup_dirs.py
+test.txt
